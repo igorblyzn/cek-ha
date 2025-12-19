@@ -111,9 +111,9 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
         return attrs
 
     def _generate_timeline_svg(self, schedule: list[str]) -> str:
-        """Generate SVG timeline visualization."""
+        """Generate SVG timeline visualization with current time marker."""
         width = 480
-        height = 50
+        height = 58
         bar_y = 20
         bar_height = 20
 
@@ -151,6 +151,26 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             svg_parts.append(
                 f'<line x1="{x}" y1="16" x2="{x}" y2="{bar_y}" stroke="#636e72" stroke-width="1"/>'
             )
+
+        # Current time marker
+        now = datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+        current_x = (current_minutes / 1440) * width
+
+        # Triangle marker on top
+        svg_parts.append(
+            f'<polygon points="{current_x-4},16 {current_x+4},16 {current_x},{bar_y}" fill="#00cec9"/>'
+        )
+        # Vertical line through the bar
+        svg_parts.append(
+            f'<line x1="{current_x}" y1="{bar_y}" x2="{current_x}" y2="{bar_y + bar_height}" '
+            f'stroke="#00cec9" stroke-width="2"/>'
+        )
+        # Current time label
+        svg_parts.append(
+            f'<text x="{current_x}" y="{height - 2}" font-size="9" fill="#00cec9" '
+            f'text-anchor="middle" font-family="sans-serif">{now.strftime("%H:%M")}</text>'
+        )
 
         svg_parts.append('</svg>')
         return ''.join(svg_parts)
