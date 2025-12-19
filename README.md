@@ -11,7 +11,9 @@ Home Assistant integration for monitoring planned power outages from [CEK (Це�
 - ⏰ **Next Outage** - Timestamp of the next scheduled outage
 - 📋 **Schedule** - List of all outage time windows for your queue
 - ⚡ **Outage Active** - Binary sensor indicating if an outage is currently happening
+- 📊 **Timeline Visualization** - SVG and ASCII timeline charts
 - 🔄 **Configurable Polling** - Set update interval from 5 to 120 minutes
+- 💾 **Data Caching** - Maintains last known data during network issues
 
 ## Installation
 
@@ -56,6 +58,162 @@ Home Assistant integration for monitoring planned power outages from [CEK (Це�
 | `sensor.cek_power_outage_X_next_outage` | Sensor | Next outage start timestamp |
 | `binary_sensor.cek_power_outage_X_outage_active` | Binary Sensor | True if outage is currently active |
 
+> **Note:** Replace `X` with your queue number (e.g., `6_2` for queue 6.2)
+
+## Template Queries
+
+### Basic Queries
+
+```yaml
+# Queue number
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'queue') }}
+# Result: "6.2"
+
+# Outage date
+{{ states('sensor.cek_power_outage_6_2_outage_date') }}
+# Result: "19 грудня"
+
+# Schedule as text
+{{ states('sensor.cek_power_outage_6_2_schedule') }}
+# Result: "06:00 до 09:30, 16:30 до 20:00, 23:30 до 24:00"
+
+# Next outage timestamp
+{{ states('sensor.cek_power_outage_6_2_next_outage') }}
+# Result: "2024-12-19T06:00:00"
+
+# Outage active status
+{{ states('binary_sensor.cek_power_outage_6_2_outage_active') }}
+# Result: "on" or "off"
+```
+
+### Schedule Attributes
+
+```yaml
+# Time ranges as list
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'time_ranges') }}
+# Result: ["06:00 до 09:30", "16:30 до 20:00", "23:30 до 24:00"]
+
+# Number of outage periods
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'time_ranges') | length }}
+# Result: 3
+
+# First outage period
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'time_ranges')[0] }}
+# Result: "06:00 до 09:30"
+
+# Outage percentage of the day
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'outage_percentage') }}
+# Result: 25.3
+```
+
+### Timeline Visualization
+
+```yaml
+# SVG Timeline (for Markdown card)
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_svg') }}
+
+# ASCII Timeline
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_ascii') }}
+# Result:
+# 00    06    12    18    24
+# ░░░░░░░░░░░░███████░░░░░░░░░░░░░░░████████░░░░░░░░░░██
+```
+
+### Status Attributes
+
+```yaml
+# Last successful update timestamp
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'last_updated') }}
+# Result: "2024-12-19T14:35:22.123456"
+
+# Last error (empty if no error)
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'last_error') }}
+```
+
+## Lovelace Card Examples
+
+### Basic Markdown Card with SVG Timeline
+
+```yaml
+type: markdown
+content: |
+  ## ⚡ Power Outage Schedule
+  
+  **Queue:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'queue') }}
+  
+  ![timeline](data:image/svg+xml,{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_svg') | urlencode }})
+```
+
+### Full Dashboard Card
+
+```yaml
+type: markdown
+content: |
+  ## ⚡ Power Outage - Queue {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'queue') }}
+  
+  **Date:** {{ states('sensor.cek_power_outage_6_2_outage_date') }}
+  
+  ![timeline](data:image/svg+xml,{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_svg') | urlencode }})
+  
+  **Status:** {% if is_state('binary_sensor.cek_power_outage_6_2_outage_active', 'on') %}🔴 Outage Active{% else %}🟢 Power On{% endif %}
+  
+  **Schedule:**
+  {% for range in state_attr('sensor.cek_power_outage_6_2_schedule', 'time_ranges') or [] -%}
+  - {{ range }}
+  {% endfor %}
+  
+  **Total outage:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'outage_percentage') }}% of the day
+```
+
+### Card with Error Handling
+
+```yaml
+type: markdown
+content: |
+  ## ⚡ Power Outage Schedule
+  
+  **Queue:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'queue') | default('N/A') }}
+  
+  {% if states('sensor.cek_power_outage_6_2_schedule') == 'unavailable' %}
+  ⚠️ **Error:** Unable to fetch schedule. Check internet connection.
+  {% elif states('sensor.cek_power_outage_6_2_schedule') == 'No outages' %}
+  ✅ **No scheduled outages today**
+  {% else %}
+  {% if state_attr('sensor.cek_power_outage_6_2_schedule', 'last_error') %}
+  ⚠️ **Warning:** Using cached data. Network error occurred.
+  {% endif %}
+  
+  **Date:** {{ states('sensor.cek_power_outage_6_2_outage_date') | default('Unknown') }}
+  
+  ![timeline](data:image/svg+xml,{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_svg') | urlencode }})
+  
+  **Status:** {% if is_state('binary_sensor.cek_power_outage_6_2_outage_active', 'on') %}🔴 Outage Active{% else %}🟢 Power On{% endif %}
+  
+  **Schedule:**
+  {% for range in state_attr('sensor.cek_power_outage_6_2_schedule', 'time_ranges') or [] -%}
+  - {{ range }}
+  {% endfor %}
+  
+  **Total outage:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'outage_percentage') | default(0) }}% of the day
+  
+  **Last updated:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'last_updated') | as_datetime | relative_time }} ago
+  {% endif %}
+```
+
+### ASCII Timeline Card
+
+```yaml
+type: markdown
+content: |
+  ## Power Outage Timeline
+  
+  <pre style="font-family: monospace; line-height: 1.2;">
+  {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'timeline_ascii') }}
+  </pre>
+  
+  Legend: ░ = Power On | █ = Outage
+```
+
 ## Example Automations
 
 ### Notification Before Outage
@@ -89,6 +247,29 @@ automation:
           entity_id: switch.your_device
 ```
 
+### Daily Schedule Notification
+
+```yaml
+automation:
+  - alias: "Daily outage schedule notification"
+    trigger:
+      - platform: time
+        at: "07:00:00"
+    condition:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.cek_power_outage_6_2_schedule
+            state: "No outages"
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "📋 Today's Power Outage Schedule"
+          message: >
+            Queue {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'queue') }}:
+            {{ states('sensor.cek_power_outage_6_2_schedule') }}
+```
+
 ## Support
 
 If you find this integration useful, please consider giving it a ⭐ on GitHub!
@@ -96,4 +277,3 @@ If you find this integration useful, please consider giving it a ⭐ on GitHub!
 ## License
 
 MIT License
-
