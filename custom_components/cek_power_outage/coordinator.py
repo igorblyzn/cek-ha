@@ -70,6 +70,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._update_interval_minutes = update_interval
         self._last_successful_data: dict[str, Any] | None = None
         self._last_updated: datetime | None = None
+        self._last_check: datetime | None = None
         self._last_error: str | None = None
 
         super().__init__(
@@ -85,6 +86,11 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._last_updated
 
     @property
+    def last_check(self) -> datetime | None:
+        """Return the last fetch attempt timestamp (success or failure)."""
+        return self._last_check
+
+    @property
     def last_error(self) -> str | None:
         """Return the last error message, if any."""
         return self._last_error
@@ -96,6 +102,9 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from CEK website."""
+        # Track every fetch attempt
+        self._last_check = datetime.now()
+
         try:
             data = await self.hass.async_add_executor_job(self._fetch_data)
             # Success - cache the data and clear error

@@ -68,7 +68,10 @@ class CEKOutageActiveSensor(
             "date": self.coordinator.data.get("date"),
         }
 
-        # Add last_updated timestamp
+        # Add last_check (every attempt) and last_updated (successful only)
+        if self.coordinator.last_check:
+            attrs["last_check"] = self.coordinator.last_check.isoformat()
+
         if self.coordinator.last_updated:
             attrs["last_updated"] = self.coordinator.last_updated.isoformat()
 

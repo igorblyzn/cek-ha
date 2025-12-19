@@ -101,7 +101,10 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             "queue": self.coordinator.data.get("queue"),
         }
 
-        # Add last_updated timestamp to all sensors
+        # Add last_check (every attempt) and last_updated (successful only)
+        if self.coordinator.last_check:
+            attrs["last_check"] = self.coordinator.last_check.isoformat()
+
         if self.coordinator.last_updated:
             attrs["last_updated"] = self.coordinator.last_updated.isoformat()
 
