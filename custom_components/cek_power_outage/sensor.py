@@ -101,6 +101,14 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             "queue": self.coordinator.data.get("queue"),
         }
 
+        # Add last_updated timestamp to all sensors
+        if self.coordinator.last_updated:
+            attrs["last_updated"] = self.coordinator.last_updated.isoformat()
+
+        # Add error info if there was a fetch error
+        if self.coordinator.last_error:
+            attrs["last_error"] = self.coordinator.last_error
+
         if self.entity_description.key == "schedule":
             schedule = self.coordinator.data.get("schedule", [])
             attrs["time_ranges"] = schedule

@@ -68,6 +68,9 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Initialize the coordinator."""
         self.queue = queue
         self._update_interval_minutes = update_interval
+        self._last_successful_data: dict[str, Any] | None = None
+        self._last_updated: datetime | None = None
+        self._last_error: str | None = None
 
         super().__init__(
             hass,
@@ -75,6 +78,16 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=DOMAIN,
             update_interval=timedelta(minutes=update_interval),
         )
+
+    @property
+    def last_updated(self) -> datetime | None:
+        """Return the last successful update timestamp."""
+        return self._last_updated
+
+    @property
+    def last_error(self) -> str | None:
+        """Return the last error message, if any."""
+        return self._last_error
 
     def set_update_interval(self, minutes: int) -> None:
         """Update the polling interval."""
@@ -84,9 +97,24 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from CEK website."""
         try:
-            return await self.hass.async_add_executor_job(self._fetch_data)
+            data = await self.hass.async_add_executor_job(self._fetch_data)
+            # Success - cache the data and clear error
+            self._last_successful_data = data
+            self._last_updated = datetime.now()
+            self._last_error = None
+            return data
         except Exception as err:
-            raise UpdateFailed(f"Error fetching CEK data: {err}") from err
+            error_msg = f"Error fetching CEK data: {err}"
+            self._last_error = error_msg
+            _LOGGER.warning(error_msg)
+
+            # Return cached data if available
+            if self._last_successful_data is not None:
+                _LOGGER.info("Using cached data from %s", self._last_updated)
+                return self._last_successful_data
+
+            # No cached data - raise the error
+            raise UpdateFailed(error_msg) from err
 
     def _fetch_data(self) -> dict[str, Any]:
         """Fetch and parse CEK page (runs in executor)."""

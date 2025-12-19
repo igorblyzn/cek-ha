@@ -62,9 +62,19 @@ class CEKOutageActiveSensor(
         if not self.coordinator.data:
             return {}
 
-        return {
+        attrs = {
             "queue": self.coordinator.data.get("queue"),
             "schedule": self.coordinator.data.get("schedule", []),
             "date": self.coordinator.data.get("date"),
         }
+
+        # Add last_updated timestamp
+        if self.coordinator.last_updated:
+            attrs["last_updated"] = self.coordinator.last_updated.isoformat()
+
+        # Add error info if there was a fetch error
+        if self.coordinator.last_error:
+            attrs["last_error"] = self.coordinator.last_error
+
+        return attrs
 
