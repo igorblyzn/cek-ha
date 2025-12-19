@@ -1,0 +1,12 @@
+{
+  "domain": "cek_power_outage",
+  "name": "CEK Power Outage",
+  "codeowners": ["@igorbl"],
+  "config_flow": true,
+  "documentation": "https://github.com/igorbl/cek_power_outage",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/igorbl/cek_power_outage/issues",
+  "version": "1.0.0"
+}
+

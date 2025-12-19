@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CEK Power Outage Setup",
+        "description": "Configure your power grid queue monitoring.",
+        "data": {
+          "queue": "Queue number (e.g., 6.2)",
+          "update_interval": "Update interval (minutes, {min_interval}-{max_interval})"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to CEK website",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This queue is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CEK Power Outage Options",
+        "description": "Adjust the polling interval.",
+        "data": {
+          "update_interval": "Update interval (minutes, {min_interval}-{max_interval})"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "date": {
+        "name": "Outage Date"
+      },
+      "next_outage": {
+        "name": "Next Outage"
+      },
+      "schedule": {
+        "name": "Schedule"
+      }
+    },
+    "binary_sensor": {
+      "outage_active": {
+        "name": "Outage Active"
+      }
+    }
+  }
+}
+
