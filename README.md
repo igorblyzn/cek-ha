@@ -1,7 +1,7 @@
 # CEK Power Outage Integration for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/release/igorbl/cek_power_outage.svg)](https://github.com/igorbl/cek_power_outage/releases)
+[![GitHub Release](https://img.shields.io/github/release/igorblyzn/cek-ha.svg)](https://github.com/igorblyzn/cek-ha/releases)
 
 Home Assistant integration for monitoring planned power outages from [CEK (Центральна Енергетична Компанія)](https://cek.dp.ua/).
 
@@ -20,7 +20,7 @@ Home Assistant integration for monitoring planned power outages from [CEK (Це�
 1. Open HACS in Home Assistant
 2. Click the three dots in the top right corner
 3. Select "Custom repositories"
-4. Add this repository URL: `https://github.com/igorbl/cek_power_outage`
+4. Add this repository URL: `https://github.com/igorblyzn/cek-ha`
 5. Select category: "Integration"
 6. Click "Add"
 7. Search for "CEK Power Outage" and install
