@@ -86,7 +86,7 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
 
         if key == "schedule":
             schedule = self.coordinator.data.get("schedule", [])
-            return ", ".join(schedule) if schedule else "No outages"
+            return "\n".join(schedule) if schedule else "No outages"
 
         return self.coordinator.data.get(key)
 
@@ -102,7 +102,6 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
 
         if self.entity_description.key == "schedule":
             attrs["time_ranges"] = self.coordinator.data.get("schedule", [])
-            attrs["announcement"] = self.coordinator.data.get("full_announcement")
 
         return attrs
 
