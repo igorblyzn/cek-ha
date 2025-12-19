@@ -1,6 +1,7 @@
 """Sensor platform for CEK Power Outage."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -101,7 +102,89 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
         }
 
         if self.entity_description.key == "schedule":
-            attrs["time_ranges"] = self.coordinator.data.get("schedule", [])
+            schedule = self.coordinator.data.get("schedule", [])
+            attrs["time_ranges"] = schedule
+            attrs["timeline_svg"] = self._generate_timeline_svg(schedule)
+            attrs["timeline_ascii"] = self._generate_ascii_timeline(schedule)
+            attrs["outage_percentage"] = self._calculate_outage_percentage(schedule)
 
         return attrs
 
+    def _generate_timeline_svg(self, schedule: list[str]) -> str:
+        """Generate SVG timeline visualization."""
+        width = 480
+        height = 50
+        bar_y = 20
+        bar_height = 20
+
+        svg_parts = [
+            f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">',
+            # Background bar
+            f'<rect x="0" y="{bar_y}" width="{width}" height="{bar_height}" rx="4" fill="#2d3436"/>',
+        ]
+
+        # Outage blocks
+        for time_range in schedule:
+            match = re.match(r"(\d{2}):(\d{2})\s*до\s*(\d{2}):(\d{2})", time_range)
+            if match:
+                start_h, start_m = int(match.group(1)), int(match.group(2))
+                end_h, end_m = int(match.group(3)), int(match.group(4))
+
+                start_pct = (start_h * 60 + start_m) / 1440
+                end_pct = (end_h * 60 + end_m) / 1440
+
+                x = start_pct * width
+                w = (end_pct - start_pct) * width
+
+                svg_parts.append(
+                    f'<rect x="{x:.1f}" y="{bar_y}" width="{w:.1f}" height="{bar_height}" rx="2" fill="#e74c3c"/>'
+                )
+
+        # Hour markers
+        for h in range(0, 25, 6):
+            x = (h / 24) * width
+            svg_parts.append(
+                f'<text x="{x}" y="12" font-size="10" fill="#b2bec3" '
+                f'text-anchor="middle" font-family="sans-serif">{h:02d}:00</text>'
+            )
+            # Tick marks
+            svg_parts.append(
+                f'<line x1="{x}" y1="16" x2="{x}" y2="{bar_y}" stroke="#636e72" stroke-width="1"/>'
+            )
+
+        svg_parts.append('</svg>')
+        return ''.join(svg_parts)
+
+    def _generate_ascii_timeline(self, schedule: list[str]) -> str:
+        """Generate ASCII timeline visualization."""
+        blocks = ['░'] * 48  # 30-min blocks for 24 hours
+
+        for time_range in schedule:
+            match = re.match(r"(\d{2}):(\d{2})\s*до\s*(\d{2}):(\d{2})", time_range)
+            if match:
+                start_h, start_m = int(match.group(1)), int(match.group(2))
+                end_h, end_m = int(match.group(3)), int(match.group(4))
+
+                start_block = start_h * 2 + (1 if start_m >= 30 else 0)
+                end_block = end_h * 2 + (1 if end_m > 30 else 0)
+
+                for i in range(start_block, min(end_block, 48)):
+                    blocks[i] = '█'
+
+        # Add hour markers
+        header = "00    06    12    18    24"
+        timeline = ''.join(blocks)
+        return f"{header}\n{timeline}"
+
+    def _calculate_outage_percentage(self, schedule: list[str]) -> float:
+        """Calculate total outage percentage of the day."""
+        total_minutes = 0
+
+        for time_range in schedule:
+            match = re.match(r"(\d{2}):(\d{2})\s*до\s*(\d{2}):(\d{2})", time_range)
+            if match:
+                start_h, start_m = int(match.group(1)), int(match.group(2))
+                end_h, end_m = int(match.group(3)), int(match.group(4))
+                total_minutes += (end_h * 60 + end_m) - (start_h * 60 + start_m)
+
+        return round((total_minutes / 1440) * 100, 1)
