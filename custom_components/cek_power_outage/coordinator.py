@@ -121,9 +121,12 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         html = self._fetch_page(CEK_URL)
         text = self._extract_text_from_html(html)
 
-        announcement = self._find_announcement(text)
-        schedule = self._extract_queue_schedule(html, self.queue)
-        date_str = self._extract_ukrainian_date(text) if announcement else None
+        # Get the first (most relevant) schedule block with its date
+        schedule_data = self._extract_first_schedule_block(html, text, self.queue)
+
+        date_str = schedule_data.get("date")
+        schedule = schedule_data.get("schedule", [])
+        announcement = schedule_data.get("announcement")
 
         # Calculate next outage time
         next_outage = self._calculate_next_outage(schedule, date_str)
@@ -157,9 +160,69 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         parser.feed(html)
         return parser.get_text()
 
+    def _extract_first_schedule_block(
+        self, html: str, text: str, queue: str
+    ) -> dict[str, Any]:
+        """
+        Extract the first schedule block with its associated date.
+
+        The page may contain multiple schedule announcements (e.g., today and tomorrow).
+        This method finds the first one and returns the date and schedule together.
+        """
+        months_pattern = "|".join(UKRAINIAN_MONTHS)
+        key_phrase = "застосовуватимуться відключення"
+        queue_escaped = re.escape(queue)
+
+        # Find all announcement lines with dates
+        announcements = []
+        for line in text.split("\n"):
+            if key_phrase in line:
+                date_match = re.search(
+                    rf"(\d{{1,2}})\s+({months_pattern})", line, re.IGNORECASE
+                )
+                if date_match:
+                    announcements.append({
+                        "line": line.strip(),
+                        "date": f"{date_match.group(1)} {date_match.group(2)}",
+                    })
+
+        # Find all schedule blocks for this queue
+        queue_pattern = rf"<p>[^<]*{queue_escaped}\s*черга[^<]*(?:<br\s*/?>.*?)*</p>"
+        schedule_matches = list(re.finditer(queue_pattern, html, re.IGNORECASE | re.DOTALL))
+
+        schedules = []
+        for match in schedule_matches:
+            p_content = match.group(0)
+            time_ranges = re.findall(r"(\d{2}:\d{2})\s*до\s*(\d{2}:\d{2})", p_content)
+            if time_ranges:
+                schedules.append([f"{start} до {end}" for start, end in time_ranges])
+
+        # Return the first schedule with its corresponding date
+        # Assume announcements and schedules are in the same order on the page
+        result: dict[str, Any] = {
+            "date": None,
+            "announcement": None,
+            "schedule": [],
+        }
+
+        if announcements:
+            result["date"] = announcements[0]["date"]
+            result["announcement"] = announcements[0]["line"]
+
+        if schedules:
+            result["schedule"] = schedules[0]
+
+        _LOGGER.debug(
+            "Found %d announcements and %d schedule blocks. Using first.",
+            len(announcements),
+            len(schedules),
+        )
+
+        return result
+
     @staticmethod
     def _extract_ukrainian_date(text: str) -> str | None:
-        """Extract Ukrainian date from the announcement."""
+        """Extract Ukrainian date from the announcement (legacy, kept for compatibility)."""
         months_pattern = "|".join(UKRAINIAN_MONTHS)
         key_phrase = "застосовуватимуться відключення"
 
@@ -174,7 +237,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _find_announcement(text: str) -> str | None:
-        """Find the announcement sentence."""
+        """Find the announcement sentence (legacy, kept for compatibility)."""
         key_phrase = "застосовуватимуться відключення наступних черг"
 
         for line in text.split("\n"):
@@ -185,7 +248,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _extract_queue_schedule(html: str, queue: str) -> list[str]:
-        """Extract time ranges for a specific queue."""
+        """Extract time ranges for a specific queue (legacy, kept for compatibility)."""
         queue_escaped = re.escape(queue)
         pattern = rf"<p>[^<]*{queue_escaped}\s*черга[^<]*(?:<br\s*/?>.*?)*</p>"
 
