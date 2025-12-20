@@ -68,15 +68,11 @@ class CEKPowerOutageConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return CEKPowerOutageOptionsFlow(config_entry)
+        return CEKPowerOutageOptionsFlow()
 
 
 class CEKPowerOutageOptionsFlow(OptionsFlow):
     """Handle options flow for CEK Power Outage."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
