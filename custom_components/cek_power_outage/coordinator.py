@@ -4,12 +4,13 @@ from __future__ import annotations
 import logging
 import re
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CEK_URL,
@@ -271,7 +272,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _calculate_next_outage(
         self, schedule: list[str], date_str: str | None
     ) -> datetime | None:
-        """Calculate the next outage start time."""
+        """Calculate the next outage start time (timezone-aware)."""
         if not schedule or not date_str:
             return None
 
@@ -282,7 +283,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return None
 
             day = int(day_match.group(1))
-            now = datetime.now()
+            now = dt_util.now()  # Use HA's timezone-aware now
 
             # Determine month from Ukrainian month name
             month = None
@@ -299,7 +300,9 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if month < now.month:
                 year += 1
 
-            outage_date = datetime(year, month, day)
+            # Create timezone-aware datetime using HA's timezone
+            local_tz = dt_util.get_default_time_zone()
+            outage_date = datetime(year, month, day, tzinfo=local_tz)
 
             # Find the next outage time
             for time_range in schedule:
