@@ -118,6 +118,9 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             attrs["timeline_svg"] = self._generate_timeline_svg(schedule)
             attrs["timeline_ascii"] = self._generate_ascii_timeline(schedule)
             attrs["outage_percentage"] = self._calculate_outage_percentage(schedule)
+            attrs["has_update"] = self.coordinator.data.get("has_update", False)
+            if self.coordinator.data.get("update_announcement"):
+                attrs["update_announcement"] = self.coordinator.data.get("update_announcement")
 
         return attrs
 

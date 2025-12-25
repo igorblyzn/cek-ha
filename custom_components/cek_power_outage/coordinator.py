@@ -135,8 +135,22 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         schedule_data = self._extract_first_schedule_block(html, text, self.queue)
 
         date_str = schedule_data.get("date")
-        schedule = schedule_data.get("schedule", [])
+        main_schedule = schedule_data.get("schedule", [])
         announcement = schedule_data.get("announcement")
+
+        # Check for schedule updates ("зміни в ГПВ")
+        update_announcement = self._find_update_announcement(text)
+        update_schedule = self._extract_update_schedule(html, self.queue)
+
+        # Use update schedule if available, otherwise use main schedule
+        if update_schedule:
+            schedule = update_schedule
+            has_update = True
+            _LOGGER.debug("Using update schedule for queue %s", self.queue)
+        else:
+            schedule = main_schedule
+            has_update = update_announcement is not None
+            _LOGGER.debug("Using main schedule for queue %s", self.queue)
 
         # Calculate next outage time
         next_outage = self._calculate_next_outage(schedule, date_str)
@@ -149,6 +163,8 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "schedule": schedule,
             "next_outage": next_outage,
             "is_active": is_active,
+            "has_update": has_update,
+            "update_announcement": update_announcement,
         }
 
     @staticmethod
@@ -229,6 +245,63 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         return result
+
+    @staticmethod
+    def _find_update_announcement(text: str) -> str | None:
+        """Find the update announcement sentence (зміни в ГПВ)."""
+        update_phrases = [
+            "Повідомляємо про зміни в ГПВ",
+            "зміни в ГПВ",
+            "ЗМІНИ В ГПВ",
+        ]
+
+        for line in text.split("\n"):
+            line_stripped = line.strip()
+            for phrase in update_phrases:
+                if phrase.lower() in line_stripped.lower():
+                    return line_stripped
+        return None
+
+    @staticmethod
+    def _extract_time_ranges(content: str) -> list[str]:
+        """
+        Extract time ranges from content.
+        Handles both "до" and "по" formats.
+        Returns normalized format: "HH:MM до HH:MM"
+        """
+        time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по)\s*(\d{2}:\d{2})", content)
+        return [f"{start} до {end}" for start, end in time_ranges]
+
+    def _extract_update_schedule(self, html: str, queue: str) -> list[str] | None:
+        """
+        Extract schedule from the "зміни в ГПВ" (update) section.
+        This section uses a different format: "📌 6.2" without "черга" and "по" instead of "до".
+        Returns None if no update section found.
+        """
+        # Find the "зміни в ГПВ" section
+        update_match = re.search(
+            r'зміни в ГПВ.*?(?=<p>📢|<p>&nbsp;</p>\s*<p>📢|$)',
+            html,
+            re.IGNORECASE | re.DOTALL
+        )
+
+        if not update_match:
+            return None
+
+        update_section = update_match.group(0)
+
+        # Find the queue in the update section
+        # Format: "📌 6.2<br />✔️ з 00:00 по 02:00..."
+        queue_escaped = re.escape(queue)
+        queue_pattern = rf"📌\s*{queue_escaped}(?:\s*черга)?[^📌]*"
+
+        queue_match = re.search(queue_pattern, update_section, re.IGNORECASE | re.DOTALL)
+
+        if queue_match:
+            queue_content = queue_match.group(0)
+            return self._extract_time_ranges(queue_content)
+
+        return None
 
     @staticmethod
     def _extract_ukrainian_date(text: str) -> str | None:
