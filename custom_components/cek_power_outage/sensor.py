@@ -9,6 +9,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -35,6 +36,14 @@ SENSOR_DESCRIPTIONS = [
         key="schedule",
         name="Schedule",
         icon="mdi:format-list-bulleted",
+    ),
+    SensorEntityDescription(
+        key="outage_hours",
+        name="Outage Hours",
+        native_unit_of_measurement="h",
+        icon="mdi:clock-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
     ),
 ]
 
@@ -78,7 +87,7 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
         }
 
     @property
-    def native_value(self) -> str | datetime | None:
+    def native_value(self) -> str | datetime | float | None:
         """Return the state of the sensor."""
         if not self.coordinator.data:
             return None
@@ -88,6 +97,10 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
         if key == "schedule":
             schedule = self.coordinator.data.get("schedule", [])
             return ", ".join(schedule) if schedule else "No outages"
+
+        if key == "outage_hours":
+            schedule = self.coordinator.data.get("schedule", [])
+            return self._calculate_outage_hours(schedule)
 
         return self.coordinator.data.get(key)
 
@@ -190,8 +203,8 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
         timeline = ''.join(blocks)
         return f"{header}\n{timeline}"
 
-    def _calculate_outage_percentage(self, schedule: list[str]) -> float:
-        """Calculate total outage percentage of the day."""
+    def _calculate_outage_minutes(self, schedule: list[str]) -> int:
+        """Calculate total outage minutes."""
         total_minutes = 0
 
         for time_range in schedule:
@@ -201,4 +214,14 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
                 end_h, end_m = int(match.group(3)), int(match.group(4))
                 total_minutes += (end_h * 60 + end_m) - (start_h * 60 + start_m)
 
+        return total_minutes
+
+    def _calculate_outage_percentage(self, schedule: list[str]) -> float:
+        """Calculate total outage percentage of the day."""
+        total_minutes = self._calculate_outage_minutes(schedule)
         return round((total_minutes / 1440) * 100, 1)
+
+    def _calculate_outage_hours(self, schedule: list[str]) -> float:
+        """Calculate total outage hours."""
+        total_minutes = self._calculate_outage_minutes(schedule)
+        return round(total_minutes / 60, 1)
