@@ -174,6 +174,10 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
                 f'<text x="{x}" y="12" font-size="10" fill="#b2bec3" '
                 f'text-anchor="middle" font-family="sans-serif">{h:02d}:00</text>'
             )
+            # Tick marks
+            svg_parts.append(
+                f'<line x1="{x}" y1="16" x2="{x}" y2="{bar_y}" stroke="#636e72" stroke-width="1"/>'
+            )
 
         # Current time marker
         now = datetime.now()
@@ -189,10 +193,6 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             f'<line x1="{current_x}" y1="{bar_y}" x2="{current_x}" y2="{bar_y + bar_height}" '
             f'stroke="#00cec9" stroke-width="2"/>'
         )
-            # Tick marks
-            svg_parts.append(
-                f'<line x1="{x}" y1="16" x2="{x}" y2="{bar_y}" stroke="#636e72" stroke-width="1"/>'
-            )
 
         svg_parts.append('</svg>')
         return ''.join(svg_parts)
