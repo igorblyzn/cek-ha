@@ -140,7 +140,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Check for schedule updates ("зміни в ГПВ")
         update_announcement = self._find_update_announcement(text)
-        update_schedule = self._extract_update_schedule(html, self.queue)
+        update_schedule = self._extract_update_schedule(html, text, self.queue)
 
         # Use update schedule if available, otherwise use main schedule
         if update_schedule:
@@ -219,7 +219,7 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         schedules = []
         for match in schedule_matches:
             p_content = match.group(0)
-            time_ranges = re.findall(r"(\d{2}:\d{2})\s*до\s*(\d{2}:\d{2})", p_content)
+            time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по|-)\s*(\d{2}:\d{2})", p_content)
             if time_ranges:
                 schedules.append([f"{start} до {end}" for start, end in time_ranges])
 
@@ -237,6 +237,12 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if schedules:
             result["schedule"] = schedules[0]
+        else:
+            # Fallback: try plain text parsing with emoji markers
+            text_schedule = self._extract_queue_schedule_from_text(text, queue)
+            if text_schedule:
+                result["schedule"] = text_schedule
+                _LOGGER.debug("Found schedule using plain text parsing")
 
         _LOGGER.debug(
             "Found %d announcements and %d schedule blocks. Using first.",
@@ -266,40 +272,79 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _extract_time_ranges(content: str) -> list[str]:
         """
         Extract time ranges from content.
-        Handles both "до" and "по" formats.
+        Handles "до", "по", and dash "-" formats.
         Returns normalized format: "HH:MM до HH:MM"
         """
-        time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по)\s*(\d{2}:\d{2})", content)
+        time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по|-)\s*(\d{2}:\d{2})", content)
         return [f"{start} до {end}" for start, end in time_ranges]
 
-    def _extract_update_schedule(self, html: str, queue: str) -> list[str] | None:
+    @staticmethod
+    def _extract_queue_schedule_from_text(text: str, queue: str) -> list[str]:
+        """
+        Extract time ranges for a specific queue from plain text.
+        Handles formats like:
+        - "🔹 Черга 1.1\n10:00-14:00\n16:00-22:00"
+        - "Черга 1.1\n10:00-14:00\n16:00-22:00"
+        Returns list of time ranges like ["10:00 до 14:00", "16:00 до 22:00"]
+        """
+        queue_escaped = re.escape(queue)
+        # Match queue header (with or without emoji) followed by time ranges
+        pattern = rf"(?:🔹|📌)?\s*Черга\s+{queue_escaped}\s*\n((?:\d{{2}}:\d{{2}}\s*-\s*\d{{2}}:\d{{2}}\s*\n?)+)"
+        
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            time_block = match.group(1)
+            return CEKDataUpdateCoordinator._extract_time_ranges(time_block)
+        
+        return []
+
+    def _extract_update_schedule(self, html: str, text: str, queue: str) -> list[str] | None:
         """
         Extract schedule from the "зміни в ГПВ" (update) section.
         This section uses a different format: "📌 6.2" without "черга" and "по" instead of "до".
         Returns None if no update section found.
         """
-        # Find the "зміни в ГПВ" section
+        # Find the "зміни в ГПВ" section in HTML
         update_match = re.search(
             r'зміни в ГПВ.*?(?=<p>📢|<p>&nbsp;</p>\s*<p>📢|$)',
             html,
             re.IGNORECASE | re.DOTALL
         )
 
-        if not update_match:
-            return None
+        if update_match:
+            update_section = update_match.group(0)
 
-        update_section = update_match.group(0)
+            # Find the queue in the update section
+            # Format: "📌 6.2<br />✔️ з 00:00 по 02:00..."
+            queue_escaped = re.escape(queue)
+            queue_pattern = rf"📌\s*{queue_escaped}(?:\s*черга)?[^📌]*"
 
-        # Find the queue in the update section
-        # Format: "📌 6.2<br />✔️ з 00:00 по 02:00..."
-        queue_escaped = re.escape(queue)
-        queue_pattern = rf"📌\s*{queue_escaped}(?:\s*черга)?[^📌]*"
+            queue_match = re.search(queue_pattern, update_section, re.IGNORECASE | re.DOTALL)
 
-        queue_match = re.search(queue_pattern, update_section, re.IGNORECASE | re.DOTALL)
+            if queue_match:
+                queue_content = queue_match.group(0)
+                schedule = self._extract_time_ranges(queue_content)
+                if schedule:
+                    return schedule
 
-        if queue_match:
-            queue_content = queue_match.group(0)
-            return self._extract_time_ranges(queue_content)
+        # Fallback: try plain text parsing for update section
+        # Look for update announcement and extract schedule from text
+        update_announcement_text = self._find_update_announcement(text)
+        if update_announcement_text:
+            # Extract the section between update announcement and next main announcement
+            update_start = text.find(update_announcement_text)
+            if update_start != -1:
+                # Find the next main announcement or end of text
+                next_main = text.find("📢 Повідомляємо, що за розпорядженням", update_start + len(update_announcement_text))
+                if next_main == -1:
+                    update_section_text = text[update_start:]
+                else:
+                    update_section_text = text[update_start:next_main]
+                
+                # Try to extract queue schedule from this section
+                schedule = self._extract_queue_schedule_from_text(update_section_text, queue)
+                if schedule:
+                    return schedule
 
         return None
 
