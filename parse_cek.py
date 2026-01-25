@@ -81,7 +81,7 @@ def extract_ukrainian_date(text: str, key_phrase: str = "застосовува�
 
 def find_announcement(text: str) -> str | None:
     """Find the main announcement sentence."""
-    key_phrase = "застосовуватимуться відключення наступних черг"
+    key_phrase = "Повідомляємо, що за розпорядженням диспетчерського центру"
     
     for line in text.split("\n"):
         line = line.strip()
@@ -96,6 +96,7 @@ def find_update_announcement(text: str) -> str | None:
     # Look for various forms of update announcements
     update_phrases = [
         "Повідомляємо про зміни в ГПВ",
+        "Повідомляємо, про зміни в ГПВ",
         "зміни в ГПВ",
         "зміни в графіку",
         "ЗМІНИ В ГПВ",
@@ -113,12 +114,33 @@ def find_update_announcement(text: str) -> str | None:
 def extract_time_ranges(content: str) -> list[str]:
     """
     Extract time ranges from content.
-    Handles both "до" and "по" formats.
+    Handles "до", "по", and dash "-" formats.
     Returns normalized format: "HH:MM до HH:MM"
     """
-    # Match both "з HH:MM до HH:MM" and "з HH:MM по HH:MM"
-    time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по)\s*(\d{2}:\d{2})", content)
+    # Match "з HH:MM до HH:MM", "з HH:MM по HH:MM", and "HH:MM-HH:MM" formats
+    time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по|-)\s*(\d{2}:\d{2})", content)
     return [f"{start} до {end}" for start, end in time_ranges]
+
+
+def extract_queue_schedule_from_text(text: str, queue: str) -> list[str]:
+    """
+    Extract time ranges for a specific queue from plain text.
+    Handles formats like:
+    - "🔹 Черга 1.1\n10:00-14:00\n16:00-22:00"
+    - "Черга 1.1\n10:00-14:00\n16:00-22:00"
+    Returns list of time ranges like ["10:00 до 14:00", "16:00 до 22:00"]
+    """
+    queue_escaped = re.escape(queue)
+    # Match queue header (with or without emoji) followed by time ranges
+    # Pattern: optional emoji + "Черга" + queue number, then lines with time ranges
+    pattern = rf"(?:🔹|📌)?\s*Черга\s+{queue_escaped}\s*\n((?:\d{{2}}:\d{{2}}\s*-\s*\d{{2}}:\d{{2}}\s*\n?)+)"
+    
+    match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        time_block = match.group(1)
+        return extract_time_ranges(time_block)
+    
+    return []
 
 
 def extract_queue_schedule(html: str, queue: str) -> list[str]:
@@ -197,6 +219,76 @@ def merge_schedules(original: list[str], update: list[str]) -> list[str]:
     return update
 
 
+def parse_cek_text(text: str, queue: str = "6.2") -> dict:
+    """
+    Parse plain text announcement and extract disconnection date and schedule.
+    Handles both update announcements and main announcements.
+    
+    Args:
+        text: Plain text announcement
+        queue: The queue number to get schedule for (e.g., "6.2")
+    
+    Returns a dictionary with the extracted data.
+    """
+    # Find main announcement
+    announcement = find_announcement(text)
+    date_str = extract_ukrainian_date(text) if announcement else None
+    
+    # Find update announcement
+    update_announcement = find_update_announcement(text)
+    has_update = update_announcement is not None
+    
+    # Split text into sections if there are multiple announcements
+    sections = []
+    if "📢 Повідомляємо, що за розпорядженням" in text:
+        # Split by main announcement marker
+        parts = text.split("📢 Повідомляємо, що за розпорядженням")
+        if len(parts) > 1:
+            # First part might be update
+            if parts[0].strip():
+                sections.append(("update", parts[0]))
+            # Rest are main announcements
+            for part in parts[1:]:
+                if part.strip():
+                    sections.append(("main", "📢 Повідомляємо, що за розпорядженням" + part))
+        else:
+            sections.append(("main", text))
+    else:
+        # Only update announcement
+        sections.append(("update", text))
+    
+    # Extract schedules from each section
+    main_schedule = []
+    update_schedule = []
+    
+    for section_type, section_text in sections:
+        schedule = extract_queue_schedule_from_text(section_text, queue)
+        if schedule:
+            if section_type == "update":
+                update_schedule = schedule
+            else:
+                main_schedule = schedule
+    
+    # Determine the final schedule
+    # If there's an update schedule, use it; otherwise use main schedule
+    if update_schedule:
+        schedule = update_schedule
+        has_update = True
+    else:
+        schedule = main_schedule
+    
+    return {
+        "date": date_str,
+        "full_announcement": announcement,
+        "queue": queue,
+        "schedule": schedule,
+        "has_update": has_update,
+        "update_announcement": update_announcement,
+        "main_schedule": main_schedule,
+        "update_schedule": update_schedule,
+    }
+
+
 def parse_cek_page(url: str, queue: str = "6.2") -> dict:
     """
     Parse the CEK page and extract disconnection date and schedule.
@@ -219,11 +311,24 @@ def parse_cek_page(url: str, queue: str = "6.2") -> dict:
     update_announcement = find_update_announcement(text)
     has_update = update_announcement is not None
     
-    # Get main schedule (from "X.X черга:" format)
+    # Get main schedule (from "X.X черга:" format in HTML)
     main_schedule = extract_queue_schedule(html, queue)
     
-    # Get update schedule (from "зміни в ГПВ" section)
+    # Get update schedule (from "зміни в ГПВ" section in HTML)
     update_schedule = extract_update_schedule(html, queue)
+    
+    # If HTML parsing didn't find schedules, try plain text parsing
+    if not main_schedule and not update_schedule:
+        # Try parsing from plain text as fallback
+        text_result = parse_cek_text(text, queue)
+        main_schedule = text_result.get("main_schedule", [])
+        update_schedule = text_result.get("update_schedule", [])
+        if not date_str:
+            date_str = text_result.get("date")
+        if not announcement:
+            announcement = text_result.get("full_announcement")
+        if not update_announcement:
+            update_announcement = text_result.get("update_announcement")
     
     print(f"\n🔍 Debug: Main schedule for queue {queue}: {main_schedule}")
     print(f"🔍 Debug: Update schedule for queue {queue}: {update_schedule}")
