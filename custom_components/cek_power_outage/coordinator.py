@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -169,15 +171,37 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _fetch_page(url: str) -> str:
-        """Fetch the HTML content from the given URL."""
+        """Fetch the HTML content from the given URL with retries for transient errors."""
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "uk,en;q=0.9",
             },
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.read().decode("utf-8")
+        last_error = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=25) as response:
+                    return response.read().decode("utf-8")
+            except (OSError, urllib.error.URLError) as err:
+                last_error = err
+                # Errno -3 (EAI_AGAIN) = temporary DNS failure, try again
+                if getattr(err, "errno", None) == -3 or "Try again" in str(err):
+                    if attempt < 2:
+                        _LOGGER.warning(
+                            "CEK fetch attempt %d/3 failed (DNS/network), retrying in 5s: %s",
+                            attempt + 1,
+                            err,
+                        )
+                        time.sleep(5)
+                    else:
+                        raise
+                else:
+                    raise
+        if last_error is not None:
+            raise last_error
 
     @staticmethod
     def _extract_text_from_html(html: str) -> str:
