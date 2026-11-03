@@ -8,6 +8,7 @@ Home Assistant integration for monitoring planned power outages from [CEK (Це�
 ## Features
 
 - 📅 **Outage Date** - Shows the date of scheduled power outages
+- 🗓️ **All Days** - Schedules for every published day (today, tomorrow) with updates applied
 - ⏰ **Next Outage** - Timestamp of the next scheduled outage
 - 📋 **Schedule** - List of all outage time windows for your queue
 - ⚡ **Outage Active** - Binary sensor indicating if an outage is currently happening
@@ -119,6 +120,24 @@ Home Assistant integration for monitoring planned power outages from [CEK (Це�
 # ░░░░░░░░░░░░███████░░░░░░░░░░░░░░░████████░░░░░░░░░░██
 ```
 
+### All Days
+
+The page usually publishes today and tomorrow. Every day from today on is in the `days` attribute (updates for each day are already applied):
+
+```yaml
+{{ state_attr('sensor.cek_power_outage_6_2_schedule', 'days') }}
+# Result:
+# - date: "2024-12-19"
+#   date_label: "19 грудня"
+#   is_today: true
+#   time_ranges: ["06:00 до 09:30", "16:30 до 20:00"]
+#   outage_hours: 7.0
+#   has_update: false
+#   timeline_svg: "<svg ...>"
+# - date: "2024-12-20"
+#   ...
+```
+
 ### Status Attributes
 
 ```yaml
@@ -163,6 +182,68 @@ content: |
   {% endfor %}
   
   **Total outage:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'outage_percentage') }}% of the day
+```
+
+### All Days Card
+
+Shows every published day stacked in one card:
+
+```yaml
+type: markdown
+content: |
+  {% set days = state_attr('sensor.cek_power_outage_6_2_schedule', 'days') or [] %}
+  {% for day in days %}
+  ### {{ '📅 Today' if day.is_today else '🗓️ ' ~ day.date_label }}{{ ' ⚠️ updated' if day.has_update else '' }}
+
+  ![timeline](data:image/svg+xml,{{ day.timeline_svg | urlencode }})
+
+  {% for range in day.time_ranges -%}
+  - {{ range }}
+  {% else -%}
+  ✅ No outages
+  {% endfor %}
+  **Total outage:** {{ day.outage_hours }} hours
+  {% else %}
+  ✅ No schedule published
+  {% endfor %}
+
+  **Last updated:** {{ state_attr('sensor.cek_power_outage_6_2_schedule', 'last_check') | as_datetime | relative_time }} ago
+```
+
+### Swipeable Days Card
+
+Requires [swipe-card](https://github.com/bramkragten/swipe-card) from HACS. One slide per day (index 0 = first published day, 1 = next):
+
+```yaml
+type: custom:swipe-card
+parameters:
+  pagination:
+    type: bullets
+cards:
+  - type: markdown
+    content: >
+      {% set day = (state_attr('sensor.cek_power_outage_6_2_schedule', 'days') or [])[0] %}
+      {% if day %}
+      ### {{ '📅 Today' if day.is_today else '🗓️ ' ~ day.date_label }}{{ ' ⚠️ updated' if day.has_update else '' }}
+
+      ![timeline](data:image/svg+xml,{{ day.timeline_svg | urlencode }})
+
+      {{ day.time_ranges | join(', ') or '✅ No outages' }}
+
+      **Total outage:** {{ day.outage_hours }} hours
+      {% else %}✅ No schedule published{% endif %}
+  - type: markdown
+    content: >
+      {% set day = (state_attr('sensor.cek_power_outage_6_2_schedule', 'days') or [])[1] %}
+      {% if day %}
+      ### 🗓️ {{ day.date_label }}{{ ' ⚠️ updated' if day.has_update else '' }}
+
+      ![timeline](data:image/svg+xml,{{ day.timeline_svg | urlencode }})
+
+      {{ day.time_ranges | join(', ') or '✅ No outages' }}
+
+      **Total outage:** {{ day.outage_hours }} hours
+      {% else %}⏳ Tomorrow's schedule not published yet{% endif %}
 ```
 
 ### Card with Error Handling

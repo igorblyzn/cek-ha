@@ -6,7 +6,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
 
@@ -25,6 +25,9 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Queue header line: "🔹 Черга 6.2", "📌 6.2", "6.2 черга"
+QUEUE_LINE_RE = re.compile(r"(?<![\d.:])(\d{1,2}\.\d{1,2})(?![\d.:])")
 
 
 class TextExtractor(HTMLParser):
@@ -133,40 +136,36 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         html = self._fetch_page(CEK_URL)
         text = self._extract_text_from_html(html)
 
-        # Get the first (most relevant) schedule block with its date
-        schedule_data = self._extract_first_schedule_block(html, text, self.queue)
+        now = dt_util.now()
+        blocks = self._parse_announcements(text, self.queue)
+        days = self._build_days(blocks, now.date())
 
-        date_str = schedule_data.get("date")
-        main_schedule = schedule_data.get("schedule", [])
-        announcement = schedule_data.get("announcement")
+        # Single-day fields describe today if published, otherwise the nearest
+        # upcoming day; "days" holds every published day from today on.
+        current = days[0] if days else None
+        today_schedule = (
+            current["schedule"]
+            if current and current["date"] == now.date().isoformat()
+            else []
+        )
 
-        # Check for schedule updates ("зміни в ГПВ")
-        update_announcement = self._find_update_announcement(text)
-        update_schedule = self._extract_update_schedule(html, text, self.queue)
-
-        # Use update schedule if available, otherwise use main schedule
-        if update_schedule:
-            schedule = update_schedule
-            has_update = True
-            _LOGGER.debug("Using update schedule for queue %s", self.queue)
-        else:
-            schedule = main_schedule
-            has_update = update_announcement is not None
-            _LOGGER.debug("Using main schedule for queue %s", self.queue)
-
-        # Calculate next outage time
-        next_outage = self._calculate_next_outage(schedule, date_str)
-        is_active = self._is_outage_active(schedule)
+        _LOGGER.debug(
+            "Found %d announcements, %d days for queue %s",
+            len(blocks),
+            len(days),
+            self.queue,
+        )
 
         return {
-            "date": date_str,
-            "full_announcement": announcement,
+            "date": current["date_label"] if current else None,
+            "full_announcement": current["announcement"] if current else None,
             "queue": self.queue,
-            "schedule": schedule,
-            "next_outage": next_outage,
-            "is_active": is_active,
-            "has_update": has_update,
-            "update_announcement": update_announcement,
+            "schedule": current["schedule"] if current else [],
+            "next_outage": self._calculate_next_outage(days, now),
+            "is_active": self._is_outage_active(today_schedule, now),
+            "has_update": current["has_update"] if current else False,
+            "update_announcement": current["update_announcement"] if current else None,
+            "days": days,
         }
 
     @staticmethod
@@ -210,268 +209,217 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         parser.feed(html)
         return parser.get_text()
 
-    def _extract_first_schedule_block(
-        self, html: str, text: str, queue: str
-    ) -> dict[str, Any]:
-        """
-        Extract the first schedule block with its associated date.
-
-        The page may contain multiple schedule announcements (e.g., today and tomorrow).
-        This method finds the first one and returns the date and schedule together.
-        """
-        months_pattern = "|".join(UKRAINIAN_MONTHS)
-        key_phrase = "застосовуватимуться відключення"
-        queue_escaped = re.escape(queue)
-
-        # Find all announcement lines with dates
-        announcements = []
-        for line in text.split("\n"):
-            if key_phrase in line:
-                date_match = re.search(
-                    rf"(\d{{1,2}})\s+({months_pattern})", line, re.IGNORECASE
-                )
-                if date_match:
-                    announcements.append({
-                        "line": line.strip(),
-                        "date": f"{date_match.group(1)} {date_match.group(2)}",
-                    })
-
-        # Find all schedule blocks for this queue
-        queue_pattern = rf"<p>[^<]*{queue_escaped}\s*черга[^<]*(?:<br\s*/?>.*?)*</p>"
-        schedule_matches = list(re.finditer(queue_pattern, html, re.IGNORECASE | re.DOTALL))
-
-        schedules = []
-        for match in schedule_matches:
-            p_content = match.group(0)
-            time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по|-)\s*(\d{2}:\d{2})", p_content)
-            if time_ranges:
-                schedules.append([f"{start} до {end}" for start, end in time_ranges])
-
-        # Return the first schedule with its corresponding date
-        # Assume announcements and schedules are in the same order on the page
-        result: dict[str, Any] = {
-            "date": None,
-            "announcement": None,
-            "schedule": [],
-        }
-
-        if announcements:
-            result["date"] = announcements[0]["date"]
-            result["announcement"] = announcements[0]["line"]
-
-        if schedules:
-            result["schedule"] = schedules[0]
-        else:
-            # Fallback: try plain text parsing with emoji markers
-            text_schedule = self._extract_queue_schedule_from_text(text, queue)
-            if text_schedule:
-                result["schedule"] = text_schedule
-                _LOGGER.debug("Found schedule using plain text parsing")
-
-        _LOGGER.debug(
-            "Found %d announcements and %d schedule blocks. Using first.",
-            len(announcements),
-            len(schedules),
-        )
-
-        return result
-
     @staticmethod
-    def _find_update_announcement(text: str) -> str | None:
-        """Find the update announcement sentence (зміни в ГПВ)."""
-        update_phrases = [
-            "Повідомляємо про зміни в ГПВ",
-            "зміни в ГПВ",
-            "ЗМІНИ В ГПВ",
+    def _parse_ranges(content: str) -> list[tuple[int, int]]:
+        """
+        Extract time ranges as (start, end) minutes of the day.
+        Handles "до", "по", and dash "-" formats.
+        """
+        return [
+            (int(sh) * 60 + int(sm), int(eh) * 60 + int(em))
+            for sh, sm, eh, em in re.findall(
+                r"(\d{1,2}):(\d{2})\s*(?:до|по|-|–|—)\s*(\d{1,2}):(\d{2})", content
+            )
         ]
 
-        for line in text.split("\n"):
-            line_stripped = line.strip()
-            for phrase in update_phrases:
-                if phrase.lower() in line_stripped.lower():
-                    return line_stripped
-        return None
+    @staticmethod
+    def _format_ranges(ranges: list[tuple[int, int]]) -> list[str]:
+        """Format minute ranges as "HH:MM до HH:MM"."""
+        return [
+            f"{start // 60:02d}:{start % 60:02d} до {end // 60:02d}:{end % 60:02d}"
+            for start, end in ranges
+        ]
 
     @staticmethod
-    def _extract_time_ranges(content: str) -> list[str]:
-        """
-        Extract time ranges from content.
-        Handles "до", "по", and dash "-" formats.
-        Returns normalized format: "HH:MM до HH:MM"
-        """
-        time_ranges = re.findall(r"(\d{2}:\d{2})\s*(?:до|по|-)\s*(\d{2}:\d{2})", content)
-        return [f"{start} до {end}" for start, end in time_ranges]
+    def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Sort ranges and join overlapping or adjacent ones."""
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(r for r in ranges if r[1] > r[0]):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        return merged
 
     @staticmethod
-    def _extract_queue_schedule_from_text(text: str, queue: str) -> list[str]:
+    def _subtract_window(
+        ranges: list[tuple[int, int]], window: tuple[int, int]
+    ) -> list[tuple[int, int]]:
+        """Remove the part of each range that falls inside the window."""
+        win_start, win_end = window
+        result: list[tuple[int, int]] = []
+        for start, end in ranges:
+            if start < win_start:
+                result.append((start, min(end, win_start)))
+            if end > win_end:
+                result.append((max(start, win_end), end))
+        return result
+
+    @classmethod
+    def _extract_queue_ranges(
+        cls, lines: list[str], queue: str
+    ) -> list[tuple[int, int]] | None:
         """
-        Extract time ranges for a specific queue from plain text.
+        Extract time ranges for a queue from the lines of one announcement.
         Handles formats like:
-        - "🔹 Черга 1.1\n10:00-14:00\n16:00-22:00"
-        - "Черга 1.1\n10:00-14:00\n16:00-22:00"
-        Returns list of time ranges like ["10:00 до 14:00", "16:00 до 22:00"]
+        - "🔹 Черга 6.2" followed by "10:00-14:00" lines
+        - "📌 6.2" followed by "✔️ з 00:00 по 02:00" lines
+        - "6.2 черга: 06:00 до 09:30, 16:30 до 20:00"
+        Returns None if the queue is not mentioned.
         """
-        queue_escaped = re.escape(queue)
-        # Match queue header (with or without emoji) followed by time ranges
-        pattern = rf"(?:🔹|📌)?\s*Черга\s+{queue_escaped}\s*\n((?:\d{{2}}:\d{{2}}\s*-\s*\d{{2}}:\d{{2}}\s*\n?)+)"
-        
-        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if match:
-            time_block = match.group(1)
-            return CEKDataUpdateCoordinator._extract_time_ranges(time_block)
-        
-        return []
-
-    def _extract_update_schedule(self, html: str, text: str, queue: str) -> list[str] | None:
-        """
-        Extract schedule from the "зміни в ГПВ" (update) section.
-        This section uses a different format: "📌 6.2" without "черга" and "по" instead of "до".
-        Returns None if no update section found.
-        """
-        # Find the "зміни в ГПВ" section in HTML
-        update_match = re.search(
-            r'зміни в ГПВ.*?(?=<p>📢|<p>&nbsp;</p>\s*<p>📢|$)',
-            html,
-            re.IGNORECASE | re.DOTALL
-        )
-
-        if update_match:
-            update_section = update_match.group(0)
-
-            # Find the queue in the update section
-            # Format: "📌 6.2<br />✔️ з 00:00 по 02:00..."
-            queue_escaped = re.escape(queue)
-            queue_pattern = rf"📌\s*{queue_escaped}(?:\s*черга)?[^📌]*"
-
-            queue_match = re.search(queue_pattern, update_section, re.IGNORECASE | re.DOTALL)
-
-            if queue_match:
-                queue_content = queue_match.group(0)
-                schedule = self._extract_time_ranges(queue_content)
-                if schedule:
-                    return schedule
-
-        # Fallback: try plain text parsing for update section
-        # Look for update announcement and extract schedule from text
-        update_announcement_text = self._find_update_announcement(text)
-        if update_announcement_text:
-            # Extract the section between update announcement and next main announcement
-            update_start = text.find(update_announcement_text)
-            if update_start != -1:
-                # Find the next main announcement or end of text
-                next_main = text.find("📢 Повідомляємо, що за розпорядженням", update_start + len(update_announcement_text))
-                if next_main == -1:
-                    update_section_text = text[update_start:]
+        ranges: list[tuple[int, int]] | None = None
+        collecting = False
+        for line in lines:
+            match = QUEUE_LINE_RE.search(line)
+            if match and ("черга" in line.lower() or line.startswith(("🔹", "📌"))):
+                collecting = match.group(1) == queue
+                if collecting:
+                    ranges = (ranges or []) + cls._parse_ranges(line[match.end():])
+                continue
+            if collecting:
+                found = cls._parse_ranges(line)
+                if not found:
+                    collecting = False
                 else:
-                    update_section_text = text[update_start:next_main]
-                
-                # Try to extract queue schedule from this section
-                schedule = self._extract_queue_schedule_from_text(update_section_text, queue)
-                if schedule:
-                    return schedule
+                    ranges = (ranges or []) + found
+        return ranges
 
-        return None
+    @classmethod
+    def _parse_announcements(cls, text: str, queue: str) -> list[dict[str, Any]]:
+        """
+        Split the page into dated schedule announcements (page order, newest first).
 
-    @staticmethod
-    def _extract_ukrainian_date(text: str) -> str | None:
-        """Extract Ukrainian date from the announcement (legacy, kept for compatibility)."""
+        Main announcements ("застосовуватимуться відключення") set the day's
+        schedule; updates ("зміни в/у ГПВ") change it, optionally only within
+        the "з HH:MM до HH:MM" window given in their header.
+        """
         months_pattern = "|".join(UKRAINIAN_MONTHS)
-        key_phrase = "застосовуватимуться відключення"
+        announcements = []
 
-        for line in text.split("\n"):
-            if key_phrase in line:
-                match = re.search(
-                    rf"(\d{{1,2}})\s+({months_pattern})", line, re.IGNORECASE
-                )
-                if match:
-                    return f"{match.group(1)} {match.group(2)}"
-        return None
+        for chunk in text.split("📢")[1:]:
+            lines = [line.strip() for line in chunk.split("\n") if line.strip()]
+
+            # Header runs until the first queue line
+            header_lines = []
+            for line in lines:
+                if QUEUE_LINE_RE.search(line) and (
+                    "черга" in line.lower() or line.startswith(("🔹", "📌"))
+                ):
+                    break
+                header_lines.append(line)
+            header = " ".join(header_lines)
+            header_lower = header.lower()
+
+            is_update = "зміни" in header_lower and "гпв" in header_lower
+            if not is_update and "застосовуватимуться відключення" not in header_lower:
+                continue
+
+            date_match = re.search(
+                rf"(\d{{1,2}})\s+({months_pattern})", header, re.IGNORECASE
+            )
+            if not date_match:
+                continue
+
+            window = None
+            if is_update:
+                window_ranges = cls._parse_ranges(header)
+                if window_ranges:
+                    window = window_ranges[0]
+
+            announcements.append({
+                "day": int(date_match.group(1)),
+                "month": UKRAINIAN_MONTHS.index(date_match.group(2).upper()) + 1,
+                "date_label": f"{date_match.group(1)} {date_match.group(2)}",
+                "header": header,
+                "is_update": is_update,
+                "window": window,
+                "ranges": cls._extract_queue_ranges(lines[len(header_lines):], queue),
+            })
+
+        return announcements
 
     @staticmethod
-    def _find_announcement(text: str) -> str | None:
-        """Find the announcement sentence (legacy, kept for compatibility)."""
-        key_phrase = "застосовуватимуться відключення наступних черг"
+    def _resolve_date(day: int, month: int, today: date) -> date | None:
+        """Pick the year that puts day/month closest to today."""
+        candidates = []
+        for year in (today.year - 1, today.year, today.year + 1):
+            try:
+                candidates.append(date(year, month, day))
+            except ValueError:
+                continue
+        return min(candidates, key=lambda d: abs(d - today), default=None)
 
-        for line in text.split("\n"):
-            line = line.strip()
-            if key_phrase in line:
-                return line
-        return None
+    @classmethod
+    def _build_days(
+        cls, announcements: list[dict[str, Any]], today: date
+    ) -> list[dict[str, Any]]:
+        """Apply announcements oldest to newest and return one entry per day."""
+        days: dict[date, dict[str, Any]] = {}
 
-    @staticmethod
-    def _extract_queue_schedule(html: str, queue: str) -> list[str]:
-        """Extract time ranges for a specific queue (legacy, kept for compatibility)."""
-        queue_escaped = re.escape(queue)
-        pattern = rf"<p>[^<]*{queue_escaped}\s*черга[^<]*(?:<br\s*/?>.*?)*</p>"
+        for item in reversed(announcements):
+            day_date = cls._resolve_date(item["day"], item["month"], today)
+            if day_date is None or day_date < today:
+                continue
 
-        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
-        if match:
-            p_content = match.group(0)
-            time_ranges = re.findall(r"(\d{2}:\d{2})\s*до\s*(\d{2}:\d{2})", p_content)
-            return [f"{start} до {end}" for start, end in time_ranges]
-        return []
+            day = days.setdefault(day_date, {
+                "date_label": item["date_label"],
+                "announcement": None,
+                "update_announcement": None,
+                "has_update": False,
+                "ranges": [],
+            })
+            ranges = item["ranges"]
+
+            if not item["is_update"]:
+                # A (re)issued main schedule replaces everything before it
+                day["ranges"] = ranges or []
+                day["announcement"] = item["header"]
+                day["has_update"] = False
+                day["update_announcement"] = None
+            else:
+                day["has_update"] = True
+                day["update_announcement"] = item["header"]
+                if item["window"]:
+                    # Queue not listed in a windowed update => no outages in that window
+                    day["ranges"] = cls._subtract_window(
+                        day["ranges"], item["window"]
+                    ) + (ranges or [])
+                elif ranges is not None:
+                    day["ranges"] = ranges
+
+            day["ranges"] = cls._merge_ranges(day["ranges"])
+
+        result = []
+        for day_date in sorted(days):
+            day = days.pop(day_date)
+            ranges = day.pop("ranges")
+            result.append({
+                "date": day_date.isoformat(),
+                **day,
+                "schedule": cls._format_ranges(ranges),
+                "outage_hours": round(sum(end - start for start, end in ranges) / 60, 1),
+            })
+        return result
 
     def _calculate_next_outage(
-        self, schedule: list[str], date_str: str | None
+        self, days: list[dict[str, Any]], now: datetime
     ) -> datetime | None:
-        """Calculate the next outage start time (timezone-aware)."""
-        if not schedule or not date_str:
-            return None
+        """Calculate the next outage start time (timezone-aware) across all days."""
+        local_tz = dt_util.get_default_time_zone()
+        for day in days:
+            day_date = date.fromisoformat(day["date"])
+            for start, _ in self._parse_ranges(", ".join(day["schedule"])):
+                outage_time = datetime(
+                    day_date.year, day_date.month, day_date.day, tzinfo=local_tz
+                ) + timedelta(minutes=start)
+                if outage_time > now:
+                    return outage_time
+        return None
 
-        try:
-            # Parse the Ukrainian date
-            day_match = re.match(r"(\d{1,2})", date_str)
-            if not day_match:
-                return None
-
-            day = int(day_match.group(1))
-            now = dt_util.now()  # Use HA's timezone-aware now
-
-            # Determine month from Ukrainian month name
-            month = None
-            for idx, month_name in enumerate(UKRAINIAN_MONTHS[:12]):
-                if month_name.lower() in date_str.lower():
-                    month = idx + 1
-                    break
-
-            if month is None:
-                return None
-
-            # Construct the date
-            year = now.year
-            if month < now.month:
-                year += 1
-
-            # Create timezone-aware datetime using HA's timezone
-            local_tz = dt_util.get_default_time_zone()
-            outage_date = datetime(year, month, day, tzinfo=local_tz)
-
-            # Find the next outage time
-            for time_range in schedule:
-                match = re.match(r"(\d{2}):(\d{2})", time_range)
-                if match:
-                    hour, minute = int(match.group(1)), int(match.group(2))
-                    outage_time = outage_date.replace(hour=hour, minute=minute)
-                    if outage_time > now:
-                        return outage_time
-
-            return None
-        except (ValueError, AttributeError):
-            return None
-
-    def _is_outage_active(self, schedule: list[str]) -> bool:
-        """Check if currently in an outage window."""
-        if not schedule:
-            return False
-
-        now = datetime.now()
-        current_time = now.strftime("%H:%M")
-
-        for time_range in schedule:
-            match = re.match(r"(\d{2}:\d{2})\s*до\s*(\d{2}:\d{2})", time_range)
-            if match:
-                start, end = match.group(1), match.group(2)
-                if start <= current_time <= end:
-                    return True
-        return False
-
+    def _is_outage_active(self, schedule: list[str], now: datetime) -> bool:
+        """Check if currently in an outage window of today's schedule."""
+        current = now.hour * 60 + now.minute
+        return any(
+            start <= current < end
+            for start, end in self._parse_ranges(", ".join(schedule))
+        )

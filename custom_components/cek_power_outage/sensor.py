@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import CEKDataUpdateCoordinator
@@ -135,10 +136,27 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             if self.coordinator.data.get("update_announcement"):
                 attrs["update_announcement"] = self.coordinator.data.get("update_announcement")
 
+            # Every published day (today and later), each with its own timeline
+            today = dt_util.now().date().isoformat()
+            attrs["days"] = [
+                {
+                    "date": day["date"],
+                    "date_label": day["date_label"],
+                    "is_today": day["date"] == today,
+                    "time_ranges": day["schedule"],
+                    "outage_hours": day["outage_hours"],
+                    "has_update": day["has_update"],
+                    "timeline_svg": self._generate_timeline_svg(
+                        day["schedule"], show_now=day["date"] == today
+                    ),
+                }
+                for day in self.coordinator.data.get("days", [])
+            ]
+
         return attrs
 
-    def _generate_timeline_svg(self, schedule: list[str]) -> str:
-        """Generate SVG timeline visualization with current time marker."""
+    def _generate_timeline_svg(self, schedule: list[str], show_now: bool = True) -> str:
+        """Generate SVG timeline visualization with optional current time marker."""
         width = 480
         height = 44
         bar_y = 20
@@ -180,19 +198,20 @@ class CEKSensor(CoordinatorEntity[CEKDataUpdateCoordinator], SensorEntity):
             )
 
         # Current time marker
-        now = datetime.now()
-        current_minutes = now.hour * 60 + now.minute
-        current_x = (current_minutes / 1440) * width
+        if show_now:
+            now = dt_util.now()
+            current_minutes = now.hour * 60 + now.minute
+            current_x = (current_minutes / 1440) * width
 
-        # Triangle marker on top
-        svg_parts.append(
-            f'<polygon points="{current_x-4},16 {current_x+4},16 {current_x},{bar_y}" fill="#00cec9"/>'
-        )
-        # Vertical line through the bar
-        svg_parts.append(
-            f'<line x1="{current_x}" y1="{bar_y}" x2="{current_x}" y2="{bar_y + bar_height}" '
-            f'stroke="#00cec9" stroke-width="2"/>'
-        )
+            # Triangle marker on top
+            svg_parts.append(
+                f'<polygon points="{current_x-4},16 {current_x+4},16 {current_x},{bar_y}" fill="#00cec9"/>'
+            )
+            # Vertical line through the bar
+            svg_parts.append(
+                f'<line x1="{current_x}" y1="{bar_y}" x2="{current_x}" y2="{bar_y + bar_height}" '
+                f'stroke="#00cec9" stroke-width="2"/>'
+            )
 
         svg_parts.append('</svg>')
         return ''.join(svg_parts)
