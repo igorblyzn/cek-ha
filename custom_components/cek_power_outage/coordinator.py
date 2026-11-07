@@ -215,12 +215,17 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Extract time ranges as (start, end) minutes of the day.
         Handles "до", "по", and dash "-" formats.
         """
-        return [
-            (int(sh) * 60 + int(sm), int(eh) * 60 + int(em))
-            for sh, sm, eh, em in re.findall(
-                r"(\d{1,2}):(\d{2})\s*(?:до|по|-|–|—)\s*(\d{1,2}):(\d{2})", content
-            )
-        ]
+        ranges = []
+        for sh, sm, eh, em in re.findall(
+            r"(\d{1,2}):(\d{2})\s*(?:до|по|-|–|—)\s*(\d{1,2}):(\d{2})", content
+        ):
+            start = int(sh) * 60 + int(sm)
+            end = int(eh) * 60 + int(em)
+            # CEK also writes end-of-day midnight as 00:00, not just 24:00.
+            if end == 0 and start > 0:
+                end = 24 * 60
+            ranges.append((start, end))
+        return ranges
 
     @staticmethod
     def _format_ranges(ranges: list[tuple[int, int]]) -> list[str]:
@@ -296,7 +301,14 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         months_pattern = "|".join(UKRAINIAN_MONTHS)
         announcements = []
 
-        for chunk in text.split("📢")[1:]:
+        # CEK sometimes omits the loudspeaker marker. Also split at plain
+        # announcement starts so navigation/article metadata (and its date)
+        # cannot become part of the schedule header.
+        chunks = re.split(
+            r"📢|(?=^[ \t]*Повідомляємо\b)", text,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+        for chunk in chunks:
             lines = [line.strip() for line in chunk.split("\n") if line.strip()]
 
             # Header runs until the first queue line
