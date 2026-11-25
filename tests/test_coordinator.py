@@ -125,6 +125,48 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(days[0]["schedule"], ["10:00 до 17:00", "22:00 до 24:00"])
         self.assertEqual(days[1]["schedule"], ["06:00 до 09:30"])
 
+    def test_pavlohrad_messages_are_skipped_case_insensitively(self):
+        for city in ("павлоград", "ПАВЛОГРАД", "Павлоград"):
+            with self.subTest(city=city):
+                html = f"""
+                <p>Повідомляємо, що 07 листопада
+                застосовуватимуться відключення для міста {city}:</p>
+                <p>Черга 6.2<br />01:00-05:00</p>
+                <p>Повідомляємо, що 08 листопада
+                застосовуватимуться відключення наступних черг:</p>
+                <p>Черга 6.2<br />06:00-09:30</p>
+                """
+                days = self.parse(html)
+                self.assertEqual(len(days), 1)
+                self.assertEqual(days[0]["date"], "2026-11-08")
+                self.assertEqual(days[0]["schedule"], ["06:00 до 09:30"])
+
+    def test_pavlohrad_in_message_body_skips_whole_message(self):
+        html = """
+        <p>Повідомляємо, що 07 листопада
+        застосовуватимуться відключення наступних черг:</p>
+        <p>Черга 6.2<br />01:00-05:00</p>
+        <p>Графік діє для мешканців м. Павлоград.</p>
+        """
+        self.assertEqual(self.parse(html), [])
+
+    def test_pavlohrad_heading_stays_attached_to_city_update(self):
+        html = """
+        <p>📢 Шановні мешканці м. ПАВЛОГРАД‼️</p>
+        <p>Повідомляємо про зміни у ГПВ на 07 листопада для споживачів
+        міста, які тимчасово вимикаються за окремим графіком:</p>
+        <p>📌 6.2 черга:<br />00:00-04:00<br />09:00-14:00<br />19:00-24:00</p>
+        <p>📢 Повідомляємо, що 07 листопада з 00:00 до 24:00
+        застосовуватимуться відключення наступних черг:</p>
+        <p>🔹 Черга 6.2<br />00:00-05:00<br />08:30-16:00<br />19:00-24:00</p>
+        """
+        days = self.parse(html)
+        self.assertEqual(len(days), 1)
+        self.assertEqual(days[0]["schedule"], [
+            "00:00 до 05:00", "08:30 до 16:00", "19:00 до 24:00",
+        ])
+        self.assertFalse(days[0]["has_update"])
+
     def test_next_queue_does_not_leak(self):
         self.assertEqual(self.parse(LIVE_FORMAT, "6.1")[0]["schedule"], [
             "03:00 до 06:30", "10:00 до 13:30", "20:30 до 24:00",

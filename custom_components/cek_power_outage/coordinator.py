@@ -28,6 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Queue header line: "🔹 Черга 6.2", "📌 6.2", "6.2 черга"
 QUEUE_LINE_RE = re.compile(r"(?<![\d.:])(\d{1,2}\.\d{1,2})(?![\d.:])")
+PAVLOHRAD_RE = re.compile(r"(?<!\w)павлоград(?!\w)", re.IGNORECASE)
 
 
 class TextExtractor(HTMLParser):
@@ -301,14 +302,29 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         months_pattern = "|".join(UKRAINIAN_MONTHS)
         announcements = []
 
-        # CEK sometimes omits the loudspeaker marker. Also split at plain
-        # announcement starts so navigation/article metadata (and its date)
-        # cannot become part of the schedule header.
-        chunks = re.split(
-            r"📢|(?=^[ \t]*Повідомляємо\b)", text,
-            flags=re.MULTILINE | re.IGNORECASE,
-        )
+        # The loudspeaker marks a complete message. Filter at this level so a
+        # heading mentioning Pavlohrad stays attached to a following
+        # "Повідомляємо..." line and its city-only schedule.
+        chunks = []
+        for index, message in enumerate(re.split(r"📢", text)):
+            # Every chunk after the preamble was introduced by a loudspeaker,
+            # so its heading and following text are one complete message.
+            if index > 0 and PAVLOHRAD_RE.search(message):
+                continue
+
+            # CEK sometimes omits the loudspeaker marker. Split the remaining
+            # text at plain announcement starts so metadata (and its date)
+            # cannot become part of a schedule header.
+            chunks.extend(re.split(
+                r"(?=^[ \t]*Повідомляємо\b)", message,
+                flags=re.MULTILINE | re.IGNORECASE,
+            ))
+
         for chunk in chunks:
+            # Also cover markerless messages that name Pavlohrad directly.
+            if PAVLOHRAD_RE.search(chunk):
+                continue
+
             lines = [line.strip() for line in chunk.split("\n") if line.strip()]
 
             # Header runs until the first queue line
