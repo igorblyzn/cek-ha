@@ -339,7 +339,11 @@ class CEKDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             header_lower = header.lower()
 
             is_update = "зміни" in header_lower and "гпв" in header_lower
-            if not is_update and "застосовуватимуться відключення" not in header_lower:
+            is_schedule = any(phrase in header_lower for phrase in (
+                "застосовуватимуться відключення",
+                "діятимуть наступні черги",
+            ))
+            if not is_update and not is_schedule:
                 continue
 
             date_match = re.search(

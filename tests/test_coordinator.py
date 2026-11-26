@@ -74,6 +74,21 @@ class ScheduleTests(unittest.TestCase):
         html = LIVE_FORMAT.replace("Повідомляємо", "📢 Повідомляємо")
         self.assertEqual(self.parse(html), self.parse(LIVE_FORMAT))
 
+    def test_new_diiatymut_queue_wording(self):
+        html = """
+        <p>📢 Повідомляємо, що за командою диспетчерського центру НЕК
+        "Укренерго", 07 ЛИСТОПАДА з 00:00 до 24:00 діятимуть наступні
+        черги:</p>
+        <p>🔹 Черга 6.2<br />00:00-02:00<br />05:30-12:30<br />
+        16:00-23:00</p>
+        """
+        days = self.parse(html)
+        self.assertEqual(len(days), 1)
+        self.assertEqual(days[0]["date"], "2026-11-07")
+        self.assertEqual(days[0]["schedule"], [
+            "00:00 до 02:00", "05:30 до 12:30", "16:00 до 23:00",
+        ])
+
     def test_old_and_new_format_combinations(self):
         for marker in ("📢 ", ""):
             for queue_header in ("6.2 черга:", "Черга 6.2", "🔹 Черга 6.2", "📌 6.2"):
